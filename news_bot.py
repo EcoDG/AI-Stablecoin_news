@@ -1,15 +1,15 @@
 import os
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime
 import xml.etree.ElementTree as ET
 from html import unescape
 import re
 
-# 환경 변수에서 설정 가져오기
+# 환경 변수
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN', '8545984954:AAEZZTPRzn3JMzXedm94WzgY-e6NLiD5D7U')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '-1003040543146')
 
-# RSS 피드 URL 및 키워드 설정
+# RSS 피드 설정
 RSS_FEEDS = {
     "AI": {
         "feeds": [
@@ -26,57 +26,168 @@ RSS_FEEDS = {
             "https://cointelegraph.com/rss",
         ],
         "keywords": ["stablecoin", "usdt", "usdc", "tether", "circle", "dai", 
-                    "busd", "stable coin", "fiat-backed", "algorithmic stablecoin"]
+                    "busd", "stable coin", "fiat-backed", "algorithmic"]
     }
 }
 
-def fetch_rss_feed(url):
-    """RSS 피드 가져오기"""
+def fetch_rss(url):
     try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
+        headers = {'User-Agent': 'Mozilla/5.0'}
         response = requests.get(url, headers=headers, timeout=10)
         response.raise_for_status()
         return response.content
     except Exception as e:
-        print(f"  ⚠️ RSS 피드 가져오기 실패 ({url.split('/')[2]}): {e}")
+        print(f"Error fetching {url.split('/')[2]}: {e}")
         return None
 
-def contains_keywords(text, keywords):
-    """텍스트에 키워드가 포함되어 있는지 확인 (대소문자 무시)"""
-    text_lower = text.lower()
-    for keyword in keywords:
-        if keyword.lower() in text_lower:
-            return True
-    return False
+def has_keyword(text, keywords):
+    text = text.lower()
+    return any(kw.lower() in text for kw in keywords)
 
-def parse_rss_feed(xml_content, keywords=None):
-    """RSS 피드 파싱하여 최근 뉴스 추출 (키워드 필터링 포함)"""
+def parse_rss(xml_content, keywords=None):
     try:
         root = ET.fromstring(xml_content)
         articles = []
         
-        # RSS 2.0 형식
         for item in root.findall('.//item'):
-            title = item.find('title')
-            link = item.find('link')
-            pub_date = item.find('pubDate')
-            description = item.find('description')
+            title_elem = item.find('title')
+            link_elem = item.find('link')
             
-            if title is not None and link is not None:
-                title_text = unescape(title.text.strip()) if title.text else ''
-                desc_text = unescape(description.text.strip()) if description is not None and description.text else ''
-                link_text = link.text.strip() if link.text else ''
+            if title_elem is not None and link_elem is not None:
+                title = unescape(title_elem.text or '').strip()
+                link = (link_elem.text or '').strip()
                 
-                # 키워드 필터링
-                if keywords:
-                    combined_text = f"{title_text} {desc_text}"
-                    if not contains_keywords(combined_text, keywords):
-                        continue
+                if keywords and not has_keyword(title, keywords):
+                    continue
                 
-                # HTML 태그 제거
-                desc_text = re.sub('<[^<]+?>', '', desc_text)
+                if title and link:
+                    articles.append({'title': title, 'link': link})
+        
+        for entry in root.findall('.//{http://www.w3.org/2005/Atom}entry'):
+            title_elem = entry.find('{http://www.w3.org/2005/Atom}title')
+            link_elem = entry.find('{http://www.w3.org/2005/Atom}link')
+            
+            if title_elem is not None and link_elem is not None:
+                title = unescape(title_elem.text or '').strip()
+                link = link_elem.get('href', '')
                 
-                article = {
-                    'tit
+                if keywords and not has_keyword(title, keywords):
+                    continue
+                
+                if title and link:
+                    articles.append({'title': title, 'link': link})
+        
+        return articles[:10]
+    except Exception as e:
+        print(f"Parse error: {e}")
+        return []
+
+def get_news(topic, config, count=3):
+    print(f"\n{topic} news collection...")
+    
+    all_articles = []
+    keywords = config.get("keywords", None)
+    
+    for feed_url in config["feeds"]:
+        source = feed_url.split('/')[2].replace('www.', '')
+        print(f"  - Fetching {source}")
+        
+        xml = fetch_rss(feed_url)
+        if xml:
+            articles = parse_rss(xml, keywords)
+            all_articles.extend(articles)
+            print(f"    Found: {len(articles)}")
+    
+    seen = set()
+    unique = []
+    for article in all_articles:
+        if article['link'] not in seen:
+            seen.add(article['link'])
+            unique.append(article)
+    
+    print(f"  Total unique: {len(unique)}")
+    
+    selected = unique[:count]
+    
+    if not selected:
+        return None
+    
+    text = ""
+    for article in selected:
+        source = article['link'].split('/')[2].replace('www.', '')
+        text += f"### {article['title']}\n"
+        text += f"- **Source**: {source}\n"
+        text += f"- **Link**: {article['link']}\n\n"
+    
+    return text
+
+def collect_news():
+    print("=" * 60)
+    print("RSS News Bot Started")
+    print("=" * 60)
+    
+    today = datetime.now().strftime("%Y-%m-%d")
+    
+    ai_news = get_news("AI", RSS_FEEDS["AI"], 3)
+    stablecoin_news = get_news("Stablecoin", RSS_FEEDS["Stablecoin"], 3)
+    
+    if not ai_news and not stablecoin_news:
+        print("No news found")
+        return None
+    
+    result = f"**AI & Stablecoin Newsletter**\n{today}\n\n"
+    
+    if ai_news:
+        result += "## 🤖 AI News\n\n" + ai_news + "\n"
+    
+    if stablecoin_news:
+        result += "## 💰 Stablecoin News\n\n" + stablecoin_news + "\n"
+    
+    result += "---\n✅ Real RSS feeds only"
+    
+    return result
+
+def send_telegram(message):
+    print("\nSending to Telegram...")
+    
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    data = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message,
+        "parse_mode": "Markdown",
+        "disable_web_page_preview": True
+    }
+    
+    try:
+        response = requests.post(url, json=data)
+        if response.status_code == 200:
+            print("✅ Sent!")
+            return True
+        else:
+            print(f"Failed: {response.text}")
+            return False
+    except Exception as e:
+        print(f"Error: {e}")
+        return False
+
+def main():
+    news = collect_news()
+    
+    if news:
+        print("\n" + "=" * 60)
+        print("Collection complete!")
+        print("=" * 60)
+        print("\nPreview:")
+        print(news[:300] + "...")
+        
+        success = send_telegram(news)
+        
+        if success:
+            print("\n🎉 Done!")
+        else:
+            print("\nFailed to send")
+    else:
+        print("\nNo news collected")
+
+if __name__ == "__main__":
+    main()
