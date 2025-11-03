@@ -1,36 +1,140 @@
 import os
 import requests
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
+import xml.etree.ElementTree as ET
+from html import unescape
+import re
 
 # 환경 변수에서 설정 가져오기
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', 'AIzaSyDzyAdb1L5cJSk4QjIUmJ0PqCrUEOIbfx4')
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN', '8545984954:AAEZZTPRzn3JMzXedm94WzgY-e6NLiD5D7U')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '-1003040543146')
 
-def search_news_with_gemini(topic, num_results=3):
-    """Gemini를 사용하여 특정 주제의 뉴스 검색"""
-    
-    # 올바른 API 엔드포인트: v1beta + gemini-2.0-flash
+# RSS 피드 URL 및 키워드 설정
+RSS_FEEDS = {
+    "AI": {
+        "feeds": [
+            "https://techcrunch.com/category/artificial-intelligence/feed/",
+            "https://www.theverge.com/ai-artificial-intelligence/rss/index.xml",
+        ],
+        "keywords": ["ai", "artificial intelligence", "machine learning", "deep learning", 
+                    "neural network", "llm", "gpt", "gemini", "claude", "chatgpt", 
+                    "openai", "anthropic", "google ai", "generative"]
+    },
+    "스테이블코인": {
+        "feeds": [
+            "https://www.coindesk.com/arc/outboundfeeds/rss/",
+            "https://cointelegraph.com/rss",
+        ],
+        "keywords": ["stablecoin", "usdt", "usdc", "tether", "circle", "dai", 
+                    "busd", "stable coin", "fiat-backed", "algorithmic stablecoin"]
+    }
+}
+
+def fetch_rss_feed(url):
+    """RSS 피드 가져오기"""
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        return response.content
+    except Exception as e:
+        print(f"  ⚠️ RSS 피드 가져오기 실패 ({url}): {e}")
+        return None
+
+def contains_keywords(text, keywords):
+    """텍스트에 키워드가 포함되어 있는지 확인 (대소문자 무시)"""
+    text_lower = text.lower()
+    for keyword in keywords:
+        if keyword.lower() in text_lower:
+            return True
+    return False
+
+def parse_rss_feed(xml_content, keywords=None, days_back=7):
+    """RSS 피드 파싱하여 최근 뉴스 추출 (키워드 필터링 포함)"""
+    try:
+        root = ET.fromstring(xml_content)
+        articles = []
+        cutoff_date = datetime.now() - timedelta(days=days_back)
+        
+        # RSS 2.0 형식
+        for item in root.findall('.//item'):
+            title = item.find('title')
+            link = item.find('link')
+            pub_date = item.find('pubDate')
+            description = item.find('description')
+            
+            if title is not None and link is not None:
+                title_text = unescape(title.text.strip()) if title.text else ''
+                desc_text = unescape(description.text.strip()) if description is not None and description.text else ''
+                
+                # 키워드 필터링
+                if keywords:
+                    # 제목 또는 설명에 키워드가 있는지 확인
+                    combined_text = f"{title_text} {desc_text}"
+                    if not contains_keywords(combined_text, keywords):
+                        continue  # 키워드가 없으면 스킵
+                
+                article = {
+                    'title': title_text,
+                    'link': link.text.strip() if link.text else '',
+                    'pub_date': pub_date.text if pub_date is not None else '',
+                    'description': desc_text
+                }
+                
+                # HTML 태그 제거
+                article['description'] = re.sub('<[^<]+?>', '', article['description'])
+                article['description'] = article['description'][:200]  # 200자로 제한
+                
+                articles.append(article)
+        
+        # Atom 형식도 지원
+        for entry in root.findall('.//{http://www.w3.org/2005/Atom}entry'):
+            title = entry.find('{http://www.w3.org/2005/Atom}title')
+            link = entry.find('{http://www.w3.org/2005/Atom}link')
+            published = entry.find('{http://www.w3.org/2005/Atom}published')
+            summary = entry.find('{http://www.w3.org/2005/Atom}summary')
+            
+            if title is not None and link is not None:
+                title_text = unescape(title.text.strip()) if title.text else ''
+                summary_text = unescape(summary.text.strip()) if summary is not None and summary.text else ''
+                
+                # 키워드 필터링
+                if keywords:
+                    combined_text = f"{title_text} {summary_text}"
+                    if not contains_keywords(combined_text, keywords):
+                        continue
+                
+                article = {
+                    'title': title_text,
+                    'link': link.get('href', '') if link is not None else '',
+                    'pub_date': published.text if published is not None else '',
+                    'description': summary_text
+                }
+                
+                # HTML 태그 제거
+                article['description'] = re.sub('<[^<]+?>', '', article['description'])
+                article['description'] = article['description'][:200]
+                
+                articles.append(article)
+        
+        return articles[:10]  # 최신 10개까지 반환 (필터링 후)
+        
+    except Exception as e:
+        print(f"  ⚠️ RSS 파싱 실패: {e}")
+        return []
+
+def translate_with_gemini(text):
+    """Gemini로 텍스트 번역"""
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
     
-    today = datetime.now().strftime("%Y년 %m월 %d일")
-    
-    prompt = f"""오늘은 {today}입니다.
+    prompt = f"""다음 영문 뉴스 제목을 자연스러운 한국어로 번역해주세요. 
+번역만 해주시고 다른 설명은 추가하지 마세요.
 
-"{topic}" 주제에 대한 최근 3일 이내의 최신 뉴스 {num_results}개를 찾아서 다음 형식으로 한글로 정리해주세요:
-
-### [뉴스 제목 한글]
-- **출처**: [뉴스 사이트명]
-- **날짜**: [발행일]
-- **요약**: [2-3문장으로 핵심 내용 요약]
-- **링크**: [원문 URL]
-
-주의사항:
-- 신뢰할 수 있는 뉴스 소스만 사용하세요 (TechCrunch, The Verge, Bloomberg, CoinDesk, Wired 등)
-- 실제로 존재하는 최신 뉴스만 포함하세요
-- 한글 번역은 자연스럽게 해주세요
-- 각 뉴스마다 반드시 원문 링크를 포함해주세요"""
+{text}"""
     
     headers = {"Content-Type": "application/json"}
     data = {
@@ -40,27 +144,81 @@ def search_news_with_gemini(topic, num_results=3):
     }
     
     try:
-        response = requests.post(url, headers=headers, json=data)
+        response = requests.post(url, headers=headers, json=data, timeout=30)
         
         if response.status_code == 200:
             result = response.json()
             if 'candidates' in result and len(result['candidates']) > 0:
-                return result['candidates'][0]['content']['parts'][0]['text']
-            else:
-                print(f"⚠️ Gemini 응답에 내용이 없습니다: {result}")
-                return None
-        else:
-            print(f"❌ Gemini API 오류 ({response.status_code}): {response.text}")
-            return None
+                translated = result['candidates'][0]['content']['parts'][0]['text'].strip()
+                # "제목:" 이 포함되어 있으면 제거
+                translated = re.sub(r'^제목:\s*', '', translated, flags=re.IGNORECASE)
+                return translated
+        return text  # 번역 실패시 원문 반환
             
     except Exception as e:
-        print(f"❌ Gemini API 요청 실패: {e}")
+        print(f"  ⚠️ 번역 실패: {e}")
+        return text
+
+def get_news_from_rss(topic, config, num_articles=3):
+    """RSS 피드에서 뉴스 가져오기 (키워드 필터링 적용)"""
+    print(f"  → {topic} 뉴스 수집 중...")
+    
+    feed_urls = config["feeds"]
+    keywords = config.get("keywords", None)
+    
+    if keywords:
+        print(f"    📌 키워드 필터: {', '.join(keywords[:5])}...")
+    
+    all_articles = []
+    
+    for feed_url in feed_urls:
+        print(f"    • {feed_url.split('/')[2]} 피드 확인 중...")
+        xml_content = fetch_rss_feed(feed_url)
+        
+        if xml_content:
+            articles = parse_rss_feed(xml_content, keywords=keywords)
+            all_articles.extend(articles)
+            print(f"      ✓ {len(articles)}개 관련 뉴스 발견")
+    
+    # 중복 제거 (같은 링크)
+    seen_links = set()
+    unique_articles = []
+    for article in all_articles:
+        if article['link'] not in seen_links:
+            seen_links.add(article['link'])
+            unique_articles.append(article)
+    
+    print(f"    ✓ 총 {len(unique_articles)}개 고유 뉴스")
+    
+    # 최신순으로 정렬하고 상위 N개 선택
+    selected_articles = unique_articles[:num_articles]
+    
+    if not selected_articles:
+        print(f"    ⚠️ 키워드와 일치하는 뉴스를 찾지 못했습니다")
         return None
+    
+    # 뉴스 포맷팅
+    news_text = ""
+    for i, article in enumerate(selected_articles, 1):
+        # 제목 번역
+        print(f"    • 뉴스 {i} 번역 중...")
+        translated_title = translate_with_gemini(article['title'])
+        
+        # 출처 추출
+        source = article['link'].split('/')[2].replace('www.', '')
+        
+        news_text += f"""### {translated_title}
+- **출처**: {source}
+- **링크**: {article['link']}
+
+"""
+    
+    return news_text
 
 def get_latest_news():
-    """AI와 스테이블코인 뉴스 수집"""
+    """RSS 피드에서 최신 뉴스 수집"""
     
-    print("🔍 Gemini로 최신 뉴스 검색 중...")
+    print("🔍 RSS 피드에서 최신 뉴스 수집 중 (키워드 필터링 적용)...")
     
     if not GEMINI_API_KEY:
         print("❌ GEMINI_API_KEY가 설정되지 않았습니다.")
@@ -68,13 +226,11 @@ def get_latest_news():
     
     today = datetime.now().strftime("%Y년 %m월 %d일")
     
-    # AI 뉴스 검색
-    print("  → AI 뉴스 검색 중...")
-    ai_news = search_news_with_gemini("AI 인공지능 (Artificial Intelligence)", 3)
+    # AI 뉴스
+    ai_news = get_news_from_rss("AI", RSS_FEEDS["AI"], 3)
     
-    # 스테이블코인 뉴스 검색
-    print("  → 스테이블코인 뉴스 검색 중...")
-    stablecoin_news = search_news_with_gemini("스테이블코인 (Stablecoin)", 3)
+    # 스테이블코인 뉴스
+    stablecoin_news = get_news_from_rss("스테이블코인", RSS_FEEDS["스테이블코인"], 3)
     
     if not ai_news and not stablecoin_news:
         print("❌ 뉴스를 가져오지 못했습니다.")
@@ -89,12 +245,13 @@ def get_latest_news():
 """
     
     if ai_news:
-        result += "## 🤖 AI 뉴스\n\n" + ai_news + "\n\n---\n\n"
+        result += "## 🤖 AI 뉴스\n\n" + ai_news + "\n---\n\n"
     
     if stablecoin_news:
-        result += "## 💰 스테이블코인 뉴스\n\n" + stablecoin_news + "\n\n---\n\n"
+        result += "## 💰 스테이블코인 뉴스\n\n" + stablecoin_news + "\n---\n\n"
     
-    result += f"📅 발행일: {today}"
+    result += f"📅 발행일: {today}\n\n"
+    result += "🔗 키워드 필터링으로 선별된 실제 뉴스입니다."
     
     return result
 
@@ -169,10 +326,10 @@ def main():
     """메인 실행 함수"""
     
     print("=" * 50)
-    print("🚀 AI & 스테이블코인 뉴스봇 시작")
+    print("🚀 AI & 스테이블코인 뉴스봇 시작 (키워드 필터링)")
     print("=" * 50)
     
-    # 1. 뉴스 수집 및 번역
+    # 1. RSS에서 뉴스 수집 및 번역
     news_content = get_latest_news()
     
     if news_content:
