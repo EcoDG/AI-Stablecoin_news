@@ -22,7 +22,7 @@ RSS_FEEDS = {
                     "neural network", "llm", "gpt", "gemini", "claude", "chatgpt", 
                     "openai", "anthropic", "google ai", "generative"]
     },
-    "스테이블코인": {
+    "Stablecoin": {
         "feeds": [
             "https://www.coindesk.com/arc/outboundfeeds/rss/",
             "https://cointelegraph.com/rss",
@@ -70,24 +70,24 @@ def parse_rss_feed(xml_content, keywords=None, days_back=7):
             if title is not None and link is not None:
                 title_text = unescape(title.text.strip()) if title.text else ''
                 desc_text = unescape(description.text.strip()) if description is not None and description.text else ''
+                link_text = link.text.strip() if link.text else ''
                 
                 # 키워드 필터링
                 if keywords:
-                    # 제목 또는 설명에 키워드가 있는지 확인
                     combined_text = f"{title_text} {desc_text}"
                     if not contains_keywords(combined_text, keywords):
-                        continue  # 키워드가 없으면 스킵
+                        continue
                 
                 article = {
                     'title': title_text,
-                    'link': link.text.strip() if link.text else '',
+                    'link': link_text,
                     'pub_date': pub_date.text if pub_date is not None else '',
                     'description': desc_text
                 }
                 
                 # HTML 태그 제거
                 article['description'] = re.sub('<[^<]+?>', '', article['description'])
-                article['description'] = article['description'][:200]  # 200자로 제한
+                article['description'] = article['description'][:200]
                 
                 articles.append(article)
         
@@ -101,6 +101,7 @@ def parse_rss_feed(xml_content, keywords=None, days_back=7):
             if title is not None and link is not None:
                 title_text = unescape(title.text.strip()) if title.text else ''
                 summary_text = unescape(summary.text.strip()) if summary is not None and summary.text else ''
+                link_href = link.get('href', '') if link is not None else ''
                 
                 # 키워드 필터링
                 if keywords:
@@ -110,7 +111,7 @@ def parse_rss_feed(xml_content, keywords=None, days_back=7):
                 
                 article = {
                     'title': title_text,
-                    'link': link.get('href', '') if link is not None else '',
+                    'link': link_href,
                     'pub_date': published.text if published is not None else '',
                     'description': summary_text
                 }
@@ -121,43 +122,11 @@ def parse_rss_feed(xml_content, keywords=None, days_back=7):
                 
                 articles.append(article)
         
-        return articles[:10]  # 최신 10개까지 반환 (필터링 후)
+        return articles[:10]
         
     except Exception as e:
         print(f"  ⚠️ RSS 파싱 실패: {e}")
         return []
-
-def translate_with_gemini(text):
-    """Gemini로 텍스트 번역"""
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
-    
-    prompt = f"""다음 영문 뉴스 제목을 자연스러운 한국어로 번역해주세요. 
-번역만 해주시고 다른 설명은 추가하지 마세요.
-
-{text}"""
-    
-    headers = {"Content-Type": "application/json"}
-    data = {
-        "contents": [{
-            "parts": [{"text": prompt}]
-        }]
-    }
-    
-    try:
-        response = requests.post(url, headers=headers, json=data, timeout=30)
-        
-        if response.status_code == 200:
-            result = response.json()
-            if 'candidates' in result and len(result['candidates']) > 0:
-                translated = result['candidates'][0]['content']['parts'][0]['text'].strip()
-                # "제목:" 이 포함되어 있으면 제거
-                translated = re.sub(r'^제목:\s*', '', translated, flags=re.IGNORECASE)
-                return translated
-        return text  # 번역 실패시 원문 반환
-            
-    except Exception as e:
-        print(f"  ⚠️ 번역 실패: {e}")
-        return text
 
 def get_news_from_rss(topic, config, num_articles=3):
     """RSS 피드에서 뉴스 가져오기 (키워드 필터링 적용)"""
@@ -184,7 +153,7 @@ def get_news_from_rss(topic, config, num_articles=3):
     seen_links = set()
     unique_articles = []
     for article in all_articles:
-        if article['link'] not in seen_links:
+        if article['link'] and article['link'] not in seen_links:
             seen_links.add(article['link'])
             unique_articles.append(article)
     
@@ -197,19 +166,15 @@ def get_news_from_rss(topic, config, num_articles=3):
         print(f"    ⚠️ 키워드와 일치하는 뉴스를 찾지 못했습니다")
         return None
     
-    # 뉴스 포맷팅
+    # 뉴스 포맷팅 (영문 그대로, 번역 없음)
     news_text = ""
     for i, article in enumerate(selected_articles, 1):
-        # 제목 번역
-        print(f"    • 뉴스 {i} 번역 중...")
-        translated_title = translate_with_gemini(article['title'])
-        
         # 출처 추출
-        source = article['link'].split('/')[2].replace('www.', '')
+        source = article['link'].split('/')[2].replace('www.', '') if article['link'] else 'Unknown'
         
-        news_text += f"""### {translated_title}
-- **출처**: {source}
-- **링크**: {article['link']}
+        news_text += f"""### {article['title']}
+- **Source**: {source}
+- **Link**: {article['link']}
 
 """
     
@@ -220,24 +185,20 @@ def get_latest_news():
     
     print("🔍 RSS 피드에서 최신 뉴스 수집 중 (키워드 필터링 적용)...")
     
-    if not GEMINI_API_KEY:
-        print("❌ GEMINI_API_KEY가 설정되지 않았습니다.")
-        return None
-    
     today = datetime.now().strftime("%Y년 %m월 %d일")
     
     # AI 뉴스
     ai_news = get_news_from_rss("AI", RSS_FEEDS["AI"], 3)
     
     # 스테이블코인 뉴스
-    stablecoin_news = get_news_from_rss("스테이블코인", RSS_FEEDS["스테이블코인"], 3)
+    stablecoin_news = get_news_from_rss("Stablecoin", RSS_FEEDS["Stablecoin"], 3)
     
     if not ai_news and not stablecoin_news:
         print("❌ 뉴스를 가져오지 못했습니다.")
         return None
     
     # 결과 조합
-    result = f"""📰 **AI & 스테이블코인 뉴스레터**
+    result = f"""📰 **AI & Stablecoin Newsletter**
 📅 {today}
 
 ---
@@ -245,13 +206,13 @@ def get_latest_news():
 """
     
     if ai_news:
-        result += "## 🤖 AI 뉴스\n\n" + ai_news + "\n---\n\n"
+        result += "## 🤖 AI News\n\n" + ai_news + "\n---\n\n"
     
     if stablecoin_news:
-        result += "## 💰 스테이블코인 뉴스\n\n" + stablecoin_news + "\n---\n\n"
+        result += "## 💰 Stablecoin News\n\n" + stablecoin_news + "\n---\n\n"
     
-    result += f"📅 발행일: {today}\n\n"
-    result += "🔗 키워드 필터링으로 선별된 실제 뉴스입니다."
+    result += f"📅 Published: {today}\n\n"
+    result += "🔗 All news is filtered by keywords from real RSS feeds."
     
     return result
 
@@ -266,7 +227,6 @@ def send_telegram_message(message):
     max_length = 4000
     
     if len(message) > max_length:
-        # 메시지를 여러 부분으로 나누기
         parts = []
         current_part = ""
         
@@ -280,7 +240,6 @@ def send_telegram_message(message):
         if current_part:
             parts.append(current_part)
         
-        # 각 부분 전송
         success_count = 0
         for i, part in enumerate(parts):
             data = {
@@ -302,7 +261,6 @@ def send_telegram_message(message):
         
         return success_count == len(parts)
     else:
-        # 한 번에 전송
         data = {
             "chat_id": TELEGRAM_CHAT_ID,
             "text": message,
@@ -326,10 +284,9 @@ def main():
     """메인 실행 함수"""
     
     print("=" * 50)
-    print("🚀 AI & 스테이블코인 뉴스봇 시작 (키워드 필터링)")
+    print("🚀 AI & Stablecoin News Bot (English, No Translation)")
     print("=" * 50)
     
-    # 1. RSS에서 뉴스 수집 및 번역
     news_content = get_latest_news()
     
     if news_content:
@@ -338,7 +295,6 @@ def main():
         print(news_content[:500] + "..." if len(news_content) > 500 else news_content)
         print("-" * 50)
         
-        # 2. 텔레그램 발송
         success = send_telegram_message(news_content)
         
         if success:
