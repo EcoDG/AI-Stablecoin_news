@@ -4,6 +4,7 @@ from datetime import datetime
 import xml.etree.ElementTree as ET
 from html import unescape
 import re
+import time
 
 # 환경 변수
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', 'AIzaSyDzyAdb1L5cJSk4QjIUmJ0PqCrUEOIbfx4')
@@ -31,8 +32,8 @@ RSS_FEEDS = {
     }
 }
 
-def translate_title(title):
-    """Gemini로 제목만 번역 (링크 정보 절대 포함 안 함)"""
+def translate_title(title, max_retries=3):
+    """Gemini로 제목만 번역 (재시도 로직 포함)"""
     
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
     
@@ -50,24 +51,44 @@ def translate_title(title):
         }]
     }
     
-    try:
-        response = requests.post(url, headers=headers, json=data, timeout=30)
-        
-        if response.status_code == 200:
-            result = response.json()
-            if 'candidates' in result and len(result['candidates']) > 0:
-                translated = result['candidates'][0]['content']['parts'][0]['text'].strip()
-                # 불필요한 접두사 제거
-                translated = re.sub(r'^(번역:|제목:)\s*', '', translated, flags=re.IGNORECASE)
-                translated = re.sub(r'^["\'](.*)["\']$', r'\1', translated)
-                return translated
-        
-        # 번역 실패시 원문 반환
-        return title
+    for attempt in range(max_retries):
+        try:
+            response = requests.post(url, headers=headers, json=data, timeout=45)
             
-    except Exception as e:
-        print(f"    Translation error: {e}")
-        return title
+            if response.status_code == 200:
+                result = response.json()
+                if 'candidates' in result and len(result['candidates']) > 0:
+                    translated = result['candidates'][0]['content']['parts'][0]['text'].strip()
+                    
+                    # 불필요한 접두사 제거
+                    translated = re.sub(r'^(번역:|제목:)\s*', '', translated, flags=re.IGNORECASE)
+                    translated = re.sub(r'^["\'](.*)["\']$', r'\1', translated)
+                    
+                    # 번역이 제대로 되었는지 확인 (영문 그대로면 재시도)
+                    if translated and translated != title:
+                        return translated
+                    else:
+                        print(f"      ⚠️ 번역 결과가 원문과 동일, 재시도 중... ({attempt + 1}/{max_retries})")
+                        time.sleep(2)
+                        continue
+            else:
+                print(f"      ⚠️ API 오류 ({response.status_code}), 재시도 중... ({attempt + 1}/{max_retries})")
+                time.sleep(2)
+                continue
+                
+        except requests.exceptions.Timeout:
+            print(f"      ⏱️ 타임아웃, 재시도 중... ({attempt + 1}/{max_retries})")
+            time.sleep(2)
+            continue
+            
+        except Exception as e:
+            print(f"      ❌ 오류: {e}, 재시도 중... ({attempt + 1}/{max_retries})")
+            time.sleep(2)
+            continue
+    
+    # 모든 재시도 실패시 원문 반환
+    print(f"      ⚠️ 번역 실패 (3회 시도), 원문 사용")
+    return title
 
 def fetch_rss(url):
     try:
@@ -151,16 +172,15 @@ def get_news(topic, config, count=3):
     if not selected:
         return None
     
-    # 제목 번역
-    print(f"  Translating {len(selected)} titles...")
+    # 제목 번역 (재시도 로직 포함)
+    print(f"  Translating {len(selected)} titles (최대 3회 재시도)...")
     text = ""
     for i, article in enumerate(selected, 1):
-        print(f"    [{i}/{len(selected)}] Translating...")
+        print(f"    [{i}/{len(selected)}] 번역 중...")
         
-        # 제목만 번역
+        # 제목만 번역 (재시도 로직 포함)
         translated_title = translate_title(article['title'])
         
-        # 원문 제목도 함께 표시 (선택사항)
         source = article['link'].split('/')[2].replace('www.', '')
         
         text += f"### {translated_title}\n"
@@ -171,7 +191,7 @@ def get_news(topic, config, count=3):
 
 def collect_news():
     print("=" * 60)
-    print("RSS News Bot with Korean Translation")
+    print("RSS News Bot with Korean Translation (재시도 로직)")
     print("=" * 60)
     
     today = datetime.now().strftime("%Y년 %m월 %d일")
