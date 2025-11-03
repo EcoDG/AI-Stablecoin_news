@@ -6,6 +6,7 @@ from html import unescape
 import re
 
 # 환경 변수
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', 'AIzaSyDzyAdb1L5cJSk4QjIUmJ0PqCrUEOIbfx4')
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN', '8545984954:AAEZZTPRzn3JMzXedm94WzgY-e6NLiD5D7U')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '-1003040543146')
 
@@ -29,6 +30,44 @@ RSS_FEEDS = {
                     "busd", "stable coin", "fiat-backed", "algorithmic"]
     }
 }
+
+def translate_title(title):
+    """Gemini로 제목만 번역 (링크 정보 절대 포함 안 함)"""
+    
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+    
+    prompt = f"""다음 뉴스 제목을 한국어로 번역해주세요.
+반드시 번역된 제목만 출력하고, 다른 설명이나 링크는 절대 추가하지 마세요.
+
+제목: {title}
+
+번역:"""
+    
+    headers = {"Content-Type": "application/json"}
+    data = {
+        "contents": [{
+            "parts": [{"text": prompt}]
+        }]
+    }
+    
+    try:
+        response = requests.post(url, headers=headers, json=data, timeout=30)
+        
+        if response.status_code == 200:
+            result = response.json()
+            if 'candidates' in result and len(result['candidates']) > 0:
+                translated = result['candidates'][0]['content']['parts'][0]['text'].strip()
+                # 불필요한 접두사 제거
+                translated = re.sub(r'^(번역:|제목:)\s*', '', translated, flags=re.IGNORECASE)
+                translated = re.sub(r'^["\'](.*)["\']$', r'\1', translated)
+                return translated
+        
+        # 번역 실패시 원문 반환
+        return title
+            
+    except Exception as e:
+        print(f"    Translation error: {e}")
+        return title
 
 def fetch_rss(url):
     try:
@@ -112,21 +151,30 @@ def get_news(topic, config, count=3):
     if not selected:
         return None
     
+    # 제목 번역
+    print(f"  Translating {len(selected)} titles...")
     text = ""
-    for article in selected:
+    for i, article in enumerate(selected, 1):
+        print(f"    [{i}/{len(selected)}] Translating...")
+        
+        # 제목만 번역
+        translated_title = translate_title(article['title'])
+        
+        # 원문 제목도 함께 표시 (선택사항)
         source = article['link'].split('/')[2].replace('www.', '')
-        text += f"### {article['title']}\n"
-        text += f"- **Source**: {source}\n"
-        text += f"- **Link**: {article['link']}\n\n"
+        
+        text += f"### {translated_title}\n"
+        text += f"- **출처**: {source}\n"
+        text += f"- **링크**: {article['link']}\n\n"
     
     return text
 
 def collect_news():
     print("=" * 60)
-    print("RSS News Bot Started")
+    print("RSS News Bot with Korean Translation")
     print("=" * 60)
     
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = datetime.now().strftime("%Y년 %m월 %d일")
     
     ai_news = get_news("AI", RSS_FEEDS["AI"], 3)
     stablecoin_news = get_news("Stablecoin", RSS_FEEDS["Stablecoin"], 3)
@@ -135,15 +183,15 @@ def collect_news():
         print("No news found")
         return None
     
-    result = f"**AI & Stablecoin Newsletter**\n{today}\n\n"
+    result = f"📰 **AI & 스테이블코인 뉴스레터**\n📅 {today}\n\n"
     
     if ai_news:
-        result += "## 🤖 AI News\n\n" + ai_news + "\n"
+        result += "## 🤖 AI 뉴스\n\n" + ai_news + "\n"
     
     if stablecoin_news:
-        result += "## 💰 Stablecoin News\n\n" + stablecoin_news + "\n"
+        result += "## 💰 스테이블코인 뉴스\n\n" + stablecoin_news + "\n"
     
-    result += "---\n✅ Real RSS feeds only"
+    result += "---\n✅ 실제 RSS 피드에서 가져온 뉴스입니다."
     
     return result
 
@@ -151,24 +199,61 @@ def send_telegram(message):
     print("\nSending to Telegram...")
     
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    data = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message,
-        "parse_mode": "Markdown",
-        "disable_web_page_preview": True
-    }
     
-    try:
-        response = requests.post(url, json=data)
-        if response.status_code == 200:
-            print("✅ Sent!")
-            return True
-        else:
-            print(f"Failed: {response.text}")
+    # 메시지가 길면 분할
+    max_length = 4000
+    
+    if len(message) > max_length:
+        parts = []
+        current = ""
+        
+        for line in message.split('\n'):
+            if len(current) + len(line) + 1 < max_length:
+                current += line + '\n'
+            else:
+                parts.append(current)
+                current = line + '\n'
+        
+        if current:
+            parts.append(current)
+        
+        for i, part in enumerate(parts):
+            data = {
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": part,
+                "parse_mode": "Markdown",
+                "disable_web_page_preview": True
+            }
+            
+            try:
+                response = requests.post(url, json=data)
+                if response.status_code == 200:
+                    print(f"  ✅ Part {i+1}/{len(parts)} sent")
+                else:
+                    print(f"  Failed part {i+1}: {response.text}")
+            except Exception as e:
+                print(f"  Error part {i+1}: {e}")
+        
+        return True
+    else:
+        data = {
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": message,
+            "parse_mode": "Markdown",
+            "disable_web_page_preview": True
+        }
+        
+        try:
+            response = requests.post(url, json=data)
+            if response.status_code == 200:
+                print("✅ Sent!")
+                return True
+            else:
+                print(f"Failed: {response.text}")
+                return False
+        except Exception as e:
+            print(f"Error: {e}")
             return False
-    except Exception as e:
-        print(f"Error: {e}")
-        return False
 
 def main():
     news = collect_news()
@@ -178,7 +263,7 @@ def main():
         print("Collection complete!")
         print("=" * 60)
         print("\nPreview:")
-        print(news[:300] + "...")
+        print(news[:400] + "...")
         
         success = send_telegram(news)
         
