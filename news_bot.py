@@ -4,9 +4,9 @@ import json
 from datetime import datetime
 
 # 환경 변수에서 설정 가져오기
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', 'AIzaSyDzyAdb1L5cJSk4QjIUmJ0PqCrUEOIbfx4')
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN', '8545984954:AAEZZTPRzn3JMzXedm94WzgY-e6NLiD5D7U')
-TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '@emartbossblog')
+TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '-1003040543146')
 
 def search_news_with_gemini(topic, num_results=3):
     """Gemini를 사용하여 특정 주제의 뉴스 검색"""
