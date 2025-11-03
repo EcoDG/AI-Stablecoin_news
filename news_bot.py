@@ -5,7 +5,7 @@ from datetime import datetime
 
 # 환경 변수에서 설정 가져오기
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
-TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN', '6003611602:AAFIlK1gAYRTh-IqSqrKLDnV6706Pd9D5RI')
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN', '8545984954:AAEZZTPRzn3JMzXedm94WzgY-e6NLiD5D7U')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '@emartbossblog')
 
 def search_news_with_gemini(topic, num_results=3):
